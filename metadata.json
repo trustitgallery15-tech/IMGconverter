@@ -1,0 +1,6 @@
+{
+  "name": "Bulk Image Converter",
+  "description": "A powerful PyQt6 and web bulk image converter with drag & drop, manual selection, format dropdown, and automatic transparency flattening.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
