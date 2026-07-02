@@ -579,11 +579,17 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Update EXIF on an image in the queue
-  const handleUpdateQueuedFile = (id: string, updatedExifDataUrl: string, metadata: ExifMetadata) => {
+  const handleUpdateQueuedFile = (id: string, updatedExifDataUrl: string, metadata: ExifMetadata, customName?: string) => {
     setFiles(prev => prev.map(f => {
       if (f.id === id) {
+        let newName = f.name;
+        if (customName) {
+          const originalExt = f.name.substring(f.name.lastIndexOf('.')) || ".jpg";
+          newName = `${customName}${originalExt}`;
+        }
         return {
           ...f,
+          name: newName,
           exifDataUrl: updatedExifDataUrl,
           exifMetadata: metadata
         };
@@ -771,6 +777,8 @@ export default function App() {
               copyright: "",
               dateTime: "",
               description: "",
+              title: "",
+              tags: "",
               gpsLat: lat,
               gpsLng: lng,
               gpsAlt: 0,

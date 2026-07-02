@@ -38,13 +38,14 @@ interface QueuedFile {
 
 interface ExifEditorProps {
   queuedFiles: QueuedFile[];
-  onUpdateQueuedFile: (id: string, updatedExifDataUrl: string, metadata: ExifMetadata) => void;
+  onUpdateQueuedFile: (id: string, updatedExifDataUrl: string, metadata: ExifMetadata, customName?: string) => void;
 }
 
 export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEditorProps) {
   const [selectedFileId, setSelectedFileId] = useState<string>("");
   const [currentImageSrc, setCurrentImageSrc] = useState<string>("");
   const [originalName, setOriginalName] = useState<string>("");
+  const [customFileName, setCustomFileName] = useState("");
   
   // Exif state
   const [make, setMake] = useState("");
@@ -54,6 +55,8 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
   const [copyright, setCopyright] = useState("");
   const [dateTime, setDateTime] = useState(""); // ISO datetime format for native input
   const [description, setDescription] = useState("");
+  const [title, setTitle] = useState("");
+  const [tags, setTags] = useState("");
   const [enableGps, setEnableGps] = useState(false);
   const [gpsLat, setGpsLat] = useState(37.7749);
   const [gpsLng, setGpsLng] = useState(-122.4194);
@@ -125,10 +128,16 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
       setCopyright(meta.copyright);
       setDateTime(exifToIsoDate(meta.dateTime));
       setDescription(meta.description);
+      setTitle(meta.title || "");
+      setTags(meta.tags || "");
       setEnableGps(meta.enableGps);
       setGpsLat(meta.gpsLat);
       setGpsLng(meta.gpsLng);
       setGpsAlt(meta.gpsAlt);
+
+      // Extract file name without extension
+      const baseName = queuedFile.name.substring(0, queuedFile.name.lastIndexOf(".")) || queuedFile.name;
+      setCustomFileName(baseName);
 
       setHasUnsavedChanges(false);
     } catch (err: any) {
@@ -182,10 +191,15 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
       setCopyright(meta.copyright);
       setDateTime(exifToIsoDate(meta.dateTime));
       setDescription(meta.description);
+      setTitle(meta.title || "");
+      setTags(meta.tags || "");
       setEnableGps(meta.enableGps);
       setGpsLat(meta.gpsLat);
       setGpsLng(meta.gpsLng);
       setGpsAlt(meta.gpsAlt);
+
+      const baseName = file.name.substring(0, file.name.lastIndexOf(".")) || file.name;
+      setCustomFileName(baseName);
 
       setHasUnsavedChanges(false);
     } catch (err: any) {
@@ -209,6 +223,8 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
         copyright,
         dateTime: isoToExifDate(dateTime),
         description,
+        title,
+        tags,
         gpsLat,
         gpsLng,
         gpsAlt,
@@ -222,7 +238,7 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
 
       // If editing a queued file, update parent state
       if (selectedFileId) {
-        onUpdateQueuedFile(selectedFileId, newJpegUrl, meta);
+        onUpdateQueuedFile(selectedFileId, newJpegUrl, meta, customFileName);
       }
     } catch (err: any) {
       console.error(err);
@@ -234,7 +250,7 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
   const handleDownload = () => {
     if (!currentImageSrc) return;
     const baseName = originalName.substring(0, originalName.lastIndexOf(".")) || originalName;
-    const downloadName = `${baseName}_exif.jpg`;
+    const downloadName = `${customFileName || baseName}.jpg`;
 
     const link = document.createElement("a");
     link.href = currentImageSrc;
@@ -292,7 +308,53 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
           <div className="lg:col-span-6 flex flex-col gap-4 bg-[#1a1a1e]/40 border border-[#202024] rounded-xl p-5 shadow-inner">
             <div className="flex items-center gap-2 border-b border-[#202024] pb-2 mb-2">
               <Camera className="w-4.5 h-4.5 text-[#00f0ff]" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Camera & Info</h3>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">File Name & Metadata Core</h3>
+            </div>
+
+            {/* Renaming & Tagging Section */}
+            <div className="bg-[#121214] border border-[#202024] p-4 rounded-xl flex flex-col gap-3.5 mb-2 shadow-inner">
+              <div>
+                <label className="block text-[10px] font-bold text-[#00f0ff] uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-[#00f0ff]" />
+                  Custom File Name (Rename Output)
+                </label>
+                <input
+                  type="text"
+                  value={customFileName}
+                  onChange={(e) => { setCustomFileName(e.target.value); setHasUnsavedChanges(true); }}
+                  placeholder="e.g. trust-it-gallery example"
+                  className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] font-medium"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-semibold text-[#8a8a93] uppercase tracking-wide mb-1 flex items-center gap-1">
+                    <FileEdit className="w-3 h-3 text-[#8a8a93]" />
+                    Image Title (EXIF)
+                  </label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => { setTitle(e.target.value); setHasUnsavedChanges(true); }}
+                    placeholder="e.g. Gallery Masterpiece"
+                    className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-[#8a8a93] uppercase tracking-wide mb-1 flex items-center gap-1">
+                    <Info className="w-3 h-3 text-[#8a8a93]" />
+                    Tags / Keywords (EXIF)
+                  </label>
+                  <input
+                    type="text"
+                    value={tags}
+                    onChange={(e) => { setTags(e.target.value); setHasUnsavedChanges(true); }}
+                    placeholder="e.g. art, exhibition, gallery"
+                    className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

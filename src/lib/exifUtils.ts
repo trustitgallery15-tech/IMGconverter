@@ -8,10 +8,47 @@ export interface ExifMetadata {
   copyright: string;
   dateTime: string;
   description: string;
+  title: string;
+  tags: string;
   gpsLat: number;
   gpsLng: number;
   gpsAlt: number;
   enableGps: boolean;
+}
+
+// Helper to convert a string to UCS-2 / UTF-16LE byte array for Microsoft tags
+export function stringToUCS2Bytes(str: string): number[] {
+  const bytes: number[] = [];
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    bytes.push(code & 0xff, (code >> 8) & 0xff);
+  }
+  // Null terminator
+  bytes.push(0, 0);
+  return bytes;
+}
+
+// Helper to convert UCS-2 / UTF-16LE byte array or binary string to standard string
+export function ucs2BytesToString(bytes: any): string {
+  if (!bytes) return "";
+  let arr: number[] = [];
+  if (Array.isArray(bytes)) {
+    arr = bytes;
+  } else if (typeof bytes === "string") {
+    for (let i = 0; i < bytes.length; i++) {
+      arr.push(bytes.charCodeAt(i));
+    }
+  } else {
+    return "";
+  }
+  
+  let str = "";
+  for (let i = 0; i < arr.length - 1; i += 2) {
+    const code = arr[i] | (arr[i + 1] << 8);
+    if (code === 0) break; // null-terminated
+    str += String.fromCharCode(code);
+  }
+  return str;
 }
 
 // Convert decimal degrees to Degrees, Minutes, Seconds (DMS)
@@ -56,6 +93,8 @@ export function loadExifFromDataUrl(dataUrl: string): ExifMetadata {
     copyright: "",
     dateTime: "",
     description: "",
+    title: "",
+    tags: "",
     gpsLat: 37.7749,
     gpsLng: -122.4194,
     gpsAlt: 0,
@@ -83,6 +122,8 @@ export function loadExifFromDataUrl(dataUrl: string): ExifMetadata {
     meta.copyright = zeroth[piexif.ImageIFD.Copyright] || "";
     meta.dateTime = zeroth[piexif.ImageIFD.DateTime] || "";
     meta.description = zeroth[piexif.ImageIFD.ImageDescription] || "";
+    meta.title = ucs2BytesToString(zeroth[40091]) || zeroth[piexif.ImageIFD.ImageDescription] || "";
+    meta.tags = ucs2BytesToString(zeroth[40094]) || "";
 
     // Parse GPS tags if present
     if (gps[piexif.GPSIFD.GPSLatitude] && gps[piexif.GPSIFD.GPSLatitudeRef]) {
@@ -136,6 +177,18 @@ export function saveExifToDataUrl(dataUrl: string, metadata: ExifMetadata): stri
   exifObj["0th"][piexif.ImageIFD.Artist] = metadata.artist || "";
   exifObj["0th"][piexif.ImageIFD.Copyright] = metadata.copyright || "";
   exifObj["0th"][piexif.ImageIFD.ImageDescription] = metadata.description || "";
+  
+  if (metadata.title) {
+    exifObj["0th"][40091] = stringToUCS2Bytes(metadata.title);
+  } else {
+    delete exifObj["0th"][40091];
+  }
+  
+  if (metadata.tags) {
+    exifObj["0th"][40094] = stringToUCS2Bytes(metadata.tags);
+  } else {
+    delete exifObj["0th"][40094];
+  }
   
   if (metadata.dateTime) {
     exifObj["0th"][piexif.ImageIFD.DateTime] = metadata.dateTime;
