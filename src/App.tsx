@@ -16,10 +16,13 @@ import {
   MapPin,
   Compass,
   Map as MapIcon,
-  Navigation
+  Navigation,
+  FileEdit
 } from "lucide-react";
 import JSZip from "jszip";
 import MapPicker from "./components/MapPicker";
+import ExifEditor from "./components/ExifEditor";
+import { ExifMetadata, saveExifToDataUrl } from "./lib/exifUtils";
 
 // Updated python code with GPS Geo Tagging support
 const PYTHON_CODE = `import os
@@ -553,6 +556,8 @@ interface QueuedFile {
   size: number;
   type: string;
   previewUrl: string;
+  exifDataUrl?: string; // stores base64 data url with modified EXIF
+  exifMetadata?: ExifMetadata; // stores active metadata object
 }
 
 export default function App() {
@@ -563,12 +568,29 @@ export default function App() {
   const [progress, setProgress] = useState<number>(0);
   const [copied, setCopied] = useState<boolean>(false);
   
+  // Active Tab for Companion UI
+  const [activeTab, setActiveTab] = useState<"convert" | "exif">("convert");
+  
   // GEO Tagging parameters
   const [enableGeo, setEnableGeo] = useState<boolean>(false);
   const [lat, setLat] = useState<number>(37.7749);
   const [lng, setLng] = useState<number>(-122.4194);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Update EXIF on an image in the queue
+  const handleUpdateQueuedFile = (id: string, updatedExifDataUrl: string, metadata: ExifMetadata) => {
+    setFiles(prev => prev.map(f => {
+      if (f.id === id) {
+        return {
+          ...f,
+          exifDataUrl: updatedExifDataUrl,
+          exifMetadata: metadata
+        };
+      }
+      return f;
+    }));
+  };
 
   // Formats definition
   const formats = [
@@ -692,7 +714,7 @@ export default function App() {
         const imgLoaded = new Promise<void>((resolve, reject) => {
           img.onload = () => resolve();
           img.onerror = () => reject(new Error(`Failed to load image: ${queuedFile.name}`));
-          img.src = queuedFile.previewUrl;
+          img.src = queuedFile.exifDataUrl || queuedFile.previewUrl;
         });
 
         await imgLoaded;
@@ -724,18 +746,52 @@ export default function App() {
         if (outputFormat === "jpeg") mimeType = "image/jpeg";
         else if (outputFormat === "webp") mimeType = "image/webp";
 
-        const blob = await new Promise<Blob | null>((resolve) => {
+        let blob = await new Promise<Blob | null>((resolve) => {
           canvas.toBlob((b) => resolve(b), mimeType, 0.92);
         });
+
+        // Re-inject EXIF metadata for JPEGs before zipping
+        if (blob && outputFormat === "jpeg") {
+          // Convert blob to Data URL
+          const reader = new FileReader();
+          const dataUrlPromise = new Promise<string>((res) => {
+            reader.onload = () => res(reader.result as string);
+            reader.readAsDataURL(blob!);
+          });
+          let finalDataUrl = await dataUrlPromise;
+
+          // Determine metadata
+          let finalMetadata: ExifMetadata | undefined = queuedFile.exifMetadata;
+          if (!finalMetadata && enableGeo) {
+            finalMetadata = {
+              make: "",
+              model: "",
+              software: "Bulk Image Converter & GEO Tagger",
+              artist: "",
+              copyright: "",
+              dateTime: "",
+              description: "",
+              gpsLat: lat,
+              gpsLng: lng,
+              gpsAlt: 0,
+              enableGps: true
+            };
+          }
+
+          if (finalMetadata) {
+            try {
+              finalDataUrl = saveExifToDataUrl(finalDataUrl, finalMetadata);
+              const res = await fetch(finalDataUrl);
+              blob = await res.blob();
+            } catch (err) {
+              console.warn("Failed to inject EXIF to batch JPEG:", err);
+            }
+          }
+        }
 
         if (blob) {
           const originalBaseName = queuedFile.name.substring(0, queuedFile.name.lastIndexOf('.')) || queuedFile.name;
           const outputName = `${originalBaseName}${targetExt}`;
-          
-          // Note: Standard web canvas doesn't easily support saving native EXIF payload directly 
-          // without external parsing libraries like exifr or piexifjs. However, the UI informs
-          // the user that the generated ZIP contains processed images, and downloading the Python 
-          // script will execute native binary-level EXIF coordinate injections with 100% precision.
           zip.file(outputName, blob);
         }
       }
@@ -806,7 +862,7 @@ export default function App() {
         
         {/* Left Side: Web Companion App */}
         <section className="lg:col-span-7 bg-[#16161a] border border-[#202024] rounded-xl p-6 shadow-xl flex flex-col h-full min-h-[600px]">
-          <div className="flex items-center justify-between mb-4 border-b border-[#202024] pb-3">
+          <div className="flex items-center justify-between mb-2 border-b border-[#202024] pb-3">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
               <h2 className="font-bold text-white tracking-wider text-sm uppercase">Interactive Web Companion</h2>
@@ -817,222 +873,257 @@ export default function App() {
             </div>
           </div>
 
-          <p className="text-xs text-[#8a8a93] mb-5">
-            Test the conversion flow. Load multiple files, choose a target output format, configure optional GEO Tagging data, and package them as a ZIP!
-          </p>
-
-          {/* Hidden File Input */}
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            multiple 
-            accept="image/*" 
-            className="hidden" 
-          />
-
-          {/* Drag & Drop Area */}
-          <div 
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={triggerBrowse}
-            className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[150px] ${
-              dragActive 
-                ? "border-[#00f0ff] bg-[#1c262e] text-[#00f0ff]" 
-                : files.length > 0 
-                  ? "border-[#00f0ff]/50 bg-[#16222a] text-[#00f0ff]" 
-                  : "border-[#323238] bg-[#1a1a1e] hover:border-[#44444c] hover:bg-[#1f1f24]"
-            }`}
-          >
-            <Upload className={`w-10 h-10 mb-3 transition-transform ${dragActive ? "scale-110 text-[#00f0ff]" : "text-[#8a8a93]"}`} />
-            <span className="text-sm font-medium">
-              {dragActive 
-                ? "Drop the files here" 
-                : files.length > 0 
-                  ? "Files Loaded Successfully!" 
-                  : "Drag & Drop Images Here"}
-            </span>
-            <span className="text-xs text-[#8a8a93] mt-1">
-              or click to browse multiple files
-            </span>
+          {/* Tab Selection */}
+          <div className="flex border-b border-[#202024] mb-5">
+            <button
+              onClick={() => setActiveTab("convert")}
+              className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === "convert"
+                  ? "border-[#00f0ff] text-[#00f0ff] bg-[#00f0ff]/5"
+                  : "border-transparent text-[#8a8a93] hover:text-white hover:bg-[#1a1a1e]"
+              }`}
+            >
+              <RefreshCw className="w-4 h-4" />
+              Batch Convert & Tagger
+            </button>
+            <button
+              onClick={() => setActiveTab("exif")}
+              className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === "exif"
+                  ? "border-[#00f0ff] text-[#00f0ff] bg-[#00f0ff]/5"
+                  : "border-transparent text-[#8a8a93] hover:text-white hover:bg-[#1a1a1e]"
+              }`}
+            >
+              <FileEdit className="w-4 h-4" />
+              EXIF & EDID Editor
+            </button>
           </div>
 
-          {/* File Queue Count & Clear Buttons */}
-          <div className="flex items-center justify-between mt-5 mb-3">
-            <span className="text-xs font-bold uppercase tracking-wider text-[#8a8a93]">
-              Queued Images ({files.length})
-            </span>
-            {files.length > 0 && (
-              <button 
-                onClick={clearQueue}
-                className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+          {activeTab === "convert" ? (
+            <div className="flex-1 flex flex-col h-full">
+              <p className="text-xs text-[#8a8a93] mb-5">
+                Test the conversion flow. Load multiple files, choose a target output format, configure optional GEO Tagging data, and package them as a ZIP!
+              </p>
+
+              {/* Hidden File Input */}
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileChange} 
+                multiple 
+                accept="image/*" 
+                className="hidden" 
+              />
+
+              {/* Drag & Drop Area */}
+              <div 
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+                onClick={triggerBrowse}
+                className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[150px] ${
+                  dragActive 
+                    ? "border-[#00f0ff] bg-[#1c262e] text-[#00f0ff]" 
+                    : files.length > 0 
+                      ? "border-[#00f0ff]/50 bg-[#16222a] text-[#00f0ff]" 
+                      : "border-[#323238] bg-[#1a1a1e] hover:border-[#44444c] hover:bg-[#1f1f24]"
+                }`}
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                Clear Queue
-              </button>
-            )}
-          </div>
-
-          {/* Visual Queue List */}
-          <div className="bg-[#1a1a1e] border border-[#202024] rounded-lg p-2 min-h-[140px] max-h-[180px] overflow-y-auto mb-5 custom-scrollbar">
-            {files.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-[#8a8a93] text-xs py-8">
-                <ImageIcon className="w-8 h-8 opacity-20 mb-2" />
-                Queue is empty. Select files to convert.
+                <Upload className={`w-10 h-10 mb-3 transition-transform ${dragActive ? "scale-110 text-[#00f0ff]" : "text-[#8a8a93]"}`} />
+                <span className="text-sm font-medium">
+                  {dragActive 
+                    ? "Drop the files here" 
+                    : files.length > 0 
+                      ? "Files Loaded Successfully!" 
+                      : "Drag & Drop Images Here"}
+                </span>
+                <span className="text-xs text-[#8a8a93] mt-1">
+                  or click to browse multiple files
+                </span>
               </div>
-            ) : (
-              <div className="space-y-1.5">
-                {files.map(f => (
-                  <div key={f.id} className="flex items-center justify-between bg-[#1f1f24] p-2 rounded border border-[#29292e]">
-                    <div className="flex items-center gap-2.5 overflow-hidden">
-                      <img src={f.previewUrl} alt="preview" className="w-7 h-7 object-cover rounded border border-[#323238]" />
-                      <div className="truncate">
-                        <p className="text-xs font-medium text-[#e1e1e6] truncate">{f.name}</p>
-                        <p className="text-[10px] text-[#8a8a93]">{formatBytes(f.size)}</p>
+
+              {/* File Queue Count & Clear Buttons */}
+              <div className="flex items-center justify-between mt-5 mb-3">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#8a8a93]">
+                  Queued Images ({files.length})
+                </span>
+                {files.length > 0 && (
+                  <button 
+                    onClick={clearQueue}
+                    className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Clear Queue
+                  </button>
+                )}
+              </div>
+
+              {/* Visual Queue List */}
+              <div className="bg-[#1a1a1e] border border-[#202024] rounded-lg p-2 min-h-[140px] max-h-[180px] overflow-y-auto mb-5 custom-scrollbar">
+                {files.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-[#8a8a93] text-xs py-8">
+                    <ImageIcon className="w-8 h-8 opacity-20 mb-2" />
+                    Queue is empty. Select files to convert.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {files.map(f => (
+                      <div key={f.id} className="flex items-center justify-between bg-[#1f1f24] p-2 rounded border border-[#29292e]">
+                        <div className="flex items-center gap-2.5 overflow-hidden">
+                          <img src={f.exifDataUrl || f.previewUrl} alt="preview" className="w-7 h-7 object-cover rounded border border-[#323238]" />
+                          <div className="truncate">
+                            <p className="text-xs font-medium text-[#e1e1e6] truncate">{f.name}</p>
+                            <p className="text-[10px] text-[#8a8a93]">{f.exifMetadata ? "Metadata Modified" : formatBytes(f.size)}</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => removeFile(f.id)}
+                          className="text-[#8a8a93] hover:text-red-400 p-1 rounded hover:bg-[#2c2c35] transition-colors"
+                          title="Remove from queue"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* GEO Tagging Section */}
+              <div className="border border-[#202024] bg-[#1a1a1e] rounded-xl p-4 mb-5 shadow-inner">
+                <div className="flex items-center justify-between mb-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="checkbox" 
+                      checked={enableGeo} 
+                      onChange={(e) => setEnableGeo(e.target.checked)}
+                      className="rounded text-[#00f0ff] focus:ring-[#00f0ff] bg-[#121214] border-[#323238] w-4 h-4 cursor-pointer"
+                    />
+                    <span className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <Compass className="w-4 h-4 text-[#00f0ff]" />
+                      Enable GPS GEO Tagging (Batch)
+                    </span>
+                  </label>
+                  <span className="text-[10px] text-[#8a8a93] font-medium flex items-center gap-1">
+                    <MapIcon className="w-3.5 h-3.5 text-[#00f0ff]" />
+                    Select on Live Map below
+                  </span>
+                </div>
+
+                {enableGeo ? (
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
+                    <div className="md:col-span-4 flex flex-col gap-3">
+                      <div>
+                        <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Latitude</label>
+                        <input 
+                          type="number" 
+                          step="any"
+                          min="-90"
+                          max="90"
+                          value={lat}
+                          onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Longitude</label>
+                        <input 
+                          type="number" 
+                          step="any"
+                          min="-180"
+                          max="180"
+                          value={lng}
+                          onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
+                          className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
+                        />
+                      </div>
+                      <div className="text-[11px] text-[#8a8a93] leading-relaxed mt-2 bg-[#121214] border border-[#202024] rounded p-2.5">
+                        <p className="font-semibold text-[#e1e1e6] mb-1">💡 Companion Note</p>
+                        Since web browsers protect file system outputs, the downloadable ZIP processes image conversions. The PyQt6 Python app on your right embeds these coordinate markers directly into binary-level image headers (EXIF) natively!
                       </div>
                     </div>
-                    <button 
-                      onClick={() => removeFile(f.id)}
-                      className="text-[#8a8a93] hover:text-red-400 p-1 rounded hover:bg-[#2c2c35] transition-colors"
-                      title="Remove from queue"
+                    <div className="md:col-span-8">
+                      <MapPicker lat={lat} lng={lng} onChange={(newLat, newLng) => { setLat(newLat); setLng(newLng); }} />
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-[#8a8a93] italic py-1">
+                    GPS tagging is currently off. Toggle the checkbox above to open the map search and select target coordinates.
+                  </p>
+                )}
+              </div>
+
+              {/* Conversion Action Panel */}
+              <div className="bg-[#1a1a1e] border border-[#202024] rounded-lg p-4 mt-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
+                  <div className="sm:col-span-7">
+                    <label className="block text-xs font-semibold text-[#8a8a93] uppercase tracking-wider mb-1.5">Target Output Format</label>
+                    <select 
+                      value={outputFormat}
+                      onChange={(e) => setOutputFormat(e.target.value)}
+                      className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] focus:border-[#00f0ff] cursor-pointer"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      {formats.map(f => (
+                        <option key={f.value} value={f.value}>{f.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-5 flex h-full items-end">
+                    <button
+                      onClick={convertAndDownloadAll}
+                      disabled={files.length === 0 || converting}
+                      className="w-full flex items-center justify-center gap-2 bg-[#00f0ff] disabled:bg-[#1c2e33] text-black disabled:text-[#8a8a93] font-bold text-xs py-2 px-4 rounded-md transition-all hover:bg-[#33f3ff] shadow-md hover:shadow-[#00f0ff]/20 disabled:hover:shadow-none cursor-pointer"
+                    >
+                      {converting ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          Converting...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-3.5 h-3.5" />
+                          Convert & Save All
+                        </>
+                      )}
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* GEO Tagging Section */}
-          <div className="border border-[#202024] bg-[#1a1a1e] rounded-xl p-4 mb-5 shadow-inner">
-            <div className="flex items-center justify-between mb-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  checked={enableGeo} 
-                  onChange={(e) => setEnableGeo(e.target.checked)}
-                  className="rounded text-[#00f0ff] focus:ring-[#00f0ff] bg-[#121214] border-[#323238] w-4 h-4 cursor-pointer"
-                />
-                <span className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
-                  <Compass className="w-4 h-4 text-[#00f0ff]" />
-                  Enable GPS GEO Tagging
-                </span>
-              </label>
-              <span className="text-[10px] text-[#8a8a93] font-medium flex items-center gap-1">
-                <MapIcon className="w-3.5 h-3.5 text-[#00f0ff]" />
-                Select on Live Map below
-              </span>
-            </div>
-
-            {enableGeo ? (
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
-                <div className="md:col-span-4 flex flex-col gap-3">
-                  <div>
-                    <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Latitude</label>
-                    <input 
-                      type="number" 
-                      step="any"
-                      min="-90"
-                      max="90"
-                      value={lat}
-                      onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Longitude</label>
-                    <input 
-                      type="number" 
-                      step="any"
-                      min="-180"
-                      max="180"
-                      value={lng}
-                      onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
-                    />
-                  </div>
-                  <div className="text-[11px] text-[#8a8a93] leading-relaxed mt-2 bg-[#121214] border border-[#202024] rounded p-2.5">
-                    <p className="font-semibold text-[#e1e1e6] mb-1">💡 Companion Note</p>
-                    Since web browsers protect file system outputs, the downloadable ZIP processes image conversions. The PyQt6 Python app on your right embeds these coordinate markers directly into binary-level image headers (EXIF) natively!
-                  </div>
                 </div>
-                <div className="md:col-span-8">
-                  <MapPicker lat={lat} lng={lng} onChange={(newLat, newLng) => { setLat(newLat); setLng(newLng); }} />
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-[#8a8a93] italic py-1">
-                GPS tagging is currently off. Toggle the checkbox above to open the map search and select target coordinates.
-              </p>
-            )}
-          </div>
 
-          {/* Conversion Action Panel */}
-          <div className="bg-[#1a1a1e] border border-[#202024] rounded-lg p-4 mt-auto">
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
-              <div className="sm:col-span-7">
-                <label className="block text-xs font-semibold text-[#8a8a93] uppercase tracking-wider mb-1.5">Target Output Format</label>
-                <select 
-                  value={outputFormat}
-                  onChange={(e) => setOutputFormat(e.target.value)}
-                  className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff] focus:border-[#00f0ff] cursor-pointer"
-                >
-                  {formats.map(f => (
-                    <option key={f.value} value={f.value}>{f.label}</option>
-                  ))}
-                </select>
-              </div>
+                {/* In-browser Alpha Flattening Indicator */}
+                {["jpeg", "bmp", "pdf"].includes(outputFormat) && (
+                  <div className="mt-3 flex items-start gap-2 bg-[#fc9d03]/10 border border-[#fc9d03]/20 rounded p-2 text-[11px] text-[#fca311]">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <p>
+                      <strong>Transparency flattening active:</strong> Images containing transparency channels (alpha) will automatically have their background flattened onto solid white, preventing potential conversion crashes.
+                    </p>
+                  </div>
+                )}
 
-              <div className="sm:col-span-5 flex h-full items-end">
-                <button
-                  onClick={convertAndDownloadAll}
-                  disabled={files.length === 0 || converting}
-                  className="w-full flex items-center justify-center gap-2 bg-[#00f0ff] disabled:bg-[#1c2e33] text-black disabled:text-[#8a8a93] font-bold text-xs py-2 px-4 rounded-md transition-all hover:bg-[#33f3ff] shadow-md hover:shadow-[#00f0ff]/20 disabled:hover:shadow-none cursor-pointer"
-                >
-                  {converting ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      Converting...
-                    </>
-                  ) : (
-                    <>
-                      <Download className="w-3.5 h-3.5" />
-                      Convert & Save All
-                    </>
-                  )}
-                </button>
+                {/* Progress Bar */}
+                {converting && (
+                  <div className="mt-4">
+                    <div className="flex justify-between text-[10px] text-[#8a8a93] mb-1">
+                      <span>Converting in-browser...</span>
+                      <span>{progress}%</span>
+                    </div>
+                    <div className="w-full bg-[#202024] rounded-full h-1.5 overflow-hidden">
+                      <div 
+                        className="bg-[#00f0ff] h-full transition-all duration-300 rounded-full" 
+                        style={{ width: `${progress}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-
-            {/* In-browser Alpha Flattening Indicator */}
-            {["jpeg", "bmp", "pdf"].includes(outputFormat) && (
-              <div className="mt-3 flex items-start gap-2 bg-[#fc9d03]/10 border border-[#fc9d03]/20 rounded p-2 text-[11px] text-[#fca311]">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <p>
-                  <strong>Transparency flattening active:</strong> Images containing transparency channels (alpha) will automatically have their background flattened onto solid white, preventing potential conversion crashes.
-                </p>
-              </div>
-            )}
-
-            {/* Progress Bar */}
-            {converting && (
-              <div className="mt-4">
-                <div className="flex justify-between text-[10px] text-[#8a8a93] mb-1">
-                  <span>Converting in-browser...</span>
-                  <span>{progress}%</span>
-                </div>
-                <div className="w-full bg-[#202024] rounded-full h-1.5 overflow-hidden">
-                  <div 
-                    className="bg-[#00f0ff] h-full transition-all duration-300 rounded-full" 
-                    style={{ width: `${progress}%` }}
-                  ></div>
-                </div>
-              </div>
-            )}
-          </div>
+          ) : (
+            <ExifEditor 
+              queuedFiles={files} 
+              onUpdateQueuedFile={handleUpdateQueuedFile} 
+            />
+          )}
         </section>
 
         {/* Right Side: PyQt6 Windows App Code Hub */}
