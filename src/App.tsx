@@ -20,7 +20,9 @@ import {
   FileEdit,
   LogOut,
   Lock,
-  Sparkles
+  Sparkles,
+  Folder,
+  FolderOpen
 } from "lucide-react";
 import JSZip from "jszip";
 import MapPicker from "./components/MapPicker";
@@ -604,10 +606,8 @@ export default function App() {
   // Active Tab for Companion UI
   const [activeTab, setActiveTab] = useState<"convert" | "exif">("convert");
   
-  // GEO Tagging parameters
-  const [enableGeo, setEnableGeo] = useState<boolean>(false);
-  const [lat, setLat] = useState<number>(37.7749);
-  const [lng, setLng] = useState<number>(-122.4194);
+  // Save Method selection ("individual" downloads or saving directly to "folder")
+  const [saveMethod, setSaveMethod] = useState<"individual" | "folder">("individual");
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -641,7 +641,6 @@ export default function App() {
     { label: "GIF (.gif)", value: "gif", ext: ".gif" },
     { label: "ICO (.ico)", value: "ico", ext: ".ico" },
     { label: "TGA (.tga)", value: "tga", ext: ".tga" },
-    { label: "PDF (.pdf)", value: "pdf", ext: ".pdf" },
   ];
 
   // Drag and drop handlers
@@ -746,13 +745,34 @@ export default function App() {
     setProgress(5);
 
     try {
-      const zip = new JSZip();
       const selectedFormatObj = formats.find(f => f.value === outputFormat);
       const targetExt = selectedFormatObj?.ext || ".png";
 
+      let dirHandle: any = null;
+      if (saveMethod === "folder") {
+        try {
+          if ("showDirectoryPicker" in window) {
+            // @ts-ignore
+            dirHandle = await window.showDirectoryPicker({
+              mode: "readwrite"
+            });
+          } else {
+            alert("Your browser does not support selecting local folders directly. We will download the images as separate files instead.");
+          }
+        } catch (err: any) {
+          console.warn("Directory picker failed or was cancelled:", err);
+          if (err.name === "AbortError") {
+            setConverting(false);
+            setProgress(0);
+            return;
+          }
+          alert("Could not access directory. We will save the images as separate downloads instead.");
+        }
+      }
+
       for (let i = 0; i < files.length; i++) {
         const queuedFile = files[i];
-        const currentProgress = Math.round(5 + (i / files.length) * 80);
+        const currentProgress = Math.round(5 + (i / files.length) * 85);
         setProgress(currentProgress);
 
         const img = new Image();
@@ -795,7 +815,7 @@ export default function App() {
           canvas.toBlob((b) => resolve(b), mimeType, 0.92);
         });
 
-        // Re-inject EXIF metadata for JPEGs before zipping
+        // Re-inject EXIF metadata for JPEGs
         if (blob && outputFormat === "jpeg") {
           // Convert blob to Data URL
           const reader = new FileReader();
@@ -807,23 +827,6 @@ export default function App() {
 
           // Determine metadata
           let finalMetadata: ExifMetadata | undefined = queuedFile.exifMetadata;
-          if (!finalMetadata && enableGeo) {
-            finalMetadata = {
-              make: "",
-              model: "",
-              software: "Bulk Image Converter & GEO Tagger",
-              artist: "",
-              copyright: "",
-              dateTime: "",
-              description: "",
-              title: "",
-              tags: "",
-              gpsLat: lat,
-              gpsLng: lng,
-              gpsAlt: 0,
-              enableGps: true
-            };
-          }
 
           if (finalMetadata) {
             try {
@@ -839,23 +842,44 @@ export default function App() {
         if (blob) {
           const originalBaseName = queuedFile.name.substring(0, queuedFile.name.lastIndexOf('.')) || queuedFile.name;
           const outputName = `${originalBaseName}${targetExt}`;
-          zip.file(outputName, blob);
+
+          if (dirHandle) {
+            // Write directly to user-selected folder
+            try {
+              const fileHandle = await dirHandle.getFileHandle(outputName, { create: true });
+              const writable = await fileHandle.createWritable();
+              await writable.write(blob);
+              await writable.close();
+            } catch (writeErr) {
+              console.error(`Failed to write ${outputName} to folder:`, writeErr);
+              // Fallback to direct anchor download
+              const downloadUrl = URL.createObjectURL(blob);
+              const downloadLink = document.createElement("a");
+              downloadLink.href = downloadUrl;
+              downloadLink.download = outputName;
+              document.body.appendChild(downloadLink);
+              downloadLink.click();
+              document.body.removeChild(downloadLink);
+              await new Promise(resolve => setTimeout(resolve, 200));
+              URL.revokeObjectURL(downloadUrl);
+            }
+          } else {
+            // Save as individual file downloads
+            const downloadUrl = URL.createObjectURL(blob);
+            const downloadLink = document.createElement("a");
+            downloadLink.href = downloadUrl;
+            downloadLink.download = outputName;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            // Wait 200ms to allow browser to trigger downloads without blocking
+            await new Promise(resolve => setTimeout(resolve, 200));
+            URL.revokeObjectURL(downloadUrl);
+          }
         }
       }
 
-      setProgress(90);
-
-      const zipContent = await zip.generateAsync({ type: "blob" });
       setProgress(100);
-
-      const downloadUrl = URL.createObjectURL(zipContent);
-      const downloadLink = document.createElement("a");
-      downloadLink.href = downloadUrl;
-      downloadLink.download = `converted_images_${outputFormat}.zip`;
-      document.body.appendChild(downloadLink);
-      downloadLink.click();
-      document.body.removeChild(downloadLink);
-      URL.revokeObjectURL(downloadUrl);
 
       setTimeout(() => {
         setConverting(false);
@@ -1106,68 +1130,57 @@ export default function App() {
                 )}
               </div>
 
-              {/* GEO Tagging Section */}
+              {/* Choose Save Destination selector */}
               <div className="border border-[#202024] bg-[#1a1a1e] rounded-xl p-4 mb-5 shadow-inner">
-                <div className="flex items-center justify-between mb-3">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input 
-                      type="checkbox" 
-                      checked={enableGeo} 
-                      onChange={(e) => setEnableGeo(e.target.checked)}
-                      className="rounded text-[#00f0ff] focus:ring-[#00f0ff] bg-[#121214] border-[#323238] w-4 h-4 cursor-pointer"
-                    />
-                    <span className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-1.5">
-                      <Compass className="w-4 h-4 text-[#00f0ff]" />
-                      Enable GPS GEO Tagging (Batch)
-                    </span>
-                  </label>
-                  <span className="text-[10px] text-[#8a8a93] font-medium flex items-center gap-1">
-                    <MapIcon className="w-3.5 h-3.5 text-[#00f0ff]" />
-                    Select on Live Map below
+                <div className="flex items-center gap-2 mb-3 border-b border-[#202024] pb-2">
+                  <Folder className="w-4 h-4 text-[#00f0ff]" />
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">
+                    Choose Save Destination
                   </span>
                 </div>
 
-                {enableGeo ? (
-                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
-                    <div className="md:col-span-4 flex flex-col gap-3">
-                      <div>
-                        <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Latitude</label>
-                        <input 
-                          type="number" 
-                          step="any"
-                          min="-90"
-                          max="90"
-                          value={lat}
-                          onChange={(e) => setLat(parseFloat(e.target.value) || 0)}
-                          className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-[#8a8a93] uppercase tracking-wide mb-1 font-bold">Longitude</label>
-                        <input 
-                          type="number" 
-                          step="any"
-                          min="-180"
-                          max="180"
-                          value={lng}
-                          onChange={(e) => setLng(parseFloat(e.target.value) || 0)}
-                          className="w-full bg-[#1e1e24] border border-[#323238] rounded-md text-xs text-[#e1e1e6] py-2 px-3 focus:outline-none focus:ring-1 focus:ring-[#00f0ff]"
-                        />
-                      </div>
-                      <div className="text-[11px] text-[#8a8a93] leading-relaxed mt-2 bg-[#121214] border border-[#202024] rounded p-2.5">
-                        <p className="font-semibold text-[#e1e1e6] mb-1">💡 Companion Note</p>
-                        Since web browsers protect file system outputs, the downloadable ZIP processes image conversions. The PyQt6 Python app on your right embeds these coordinate markers directly into binary-level image headers (EXIF) natively!
-                      </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                  <button
+                    onClick={() => setSaveMethod("individual")}
+                    className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
+                      saveMethod === "individual"
+                        ? "bg-[#00f0ff]/10 border-[#00f0ff] text-white"
+                        : "bg-[#1e1e24] border-[#323238] text-[#8a8a93] hover:text-white hover:border-[#44444c]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <Download className={`w-4 h-4 ${saveMethod === "individual" ? "text-[#00f0ff]" : "text-[#8a8a93]"}`} />
+                      <span className="text-xs font-bold uppercase tracking-wider">Separate Downloads</span>
                     </div>
-                    <div className="md:col-span-8">
-                      <MapPicker lat={lat} lng={lng} onChange={(newLat, newLng) => { setLat(newLat); setLng(newLng); }} />
+                    <p className="text-[10px] leading-relaxed text-[#8a8a93]">
+                      Downloads all converted files sequentially. Highly compatible with all browsers.
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() => setSaveMethod("folder")}
+                    className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
+                      saveMethod === "folder"
+                        ? "bg-[#00f0ff]/10 border-[#00f0ff] text-white"
+                        : "bg-[#1e1e24] border-[#323238] text-[#8a8a93] hover:text-white hover:border-[#44444c]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <FolderOpen className={`w-4 h-4 ${saveMethod === "folder" ? "text-[#00f0ff]" : "text-[#8a8a93]"}`} />
+                      <span className="text-xs font-bold uppercase tracking-wider">Choose Local Folder</span>
                     </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-[#8a8a93] italic py-1">
-                    GPS tagging is currently off. Toggle the checkbox above to open the map search and select target coordinates.
-                  </p>
-                )}
+                    <p className="text-[10px] leading-relaxed text-[#8a8a93]">
+                      Pick a specific folder on your PC/Mac. Saves files directly into it (Chrome, Edge, Opera).
+                    </p>
+                  </button>
+                </div>
+
+                <div className="bg-[#121214] border border-[#202024] rounded p-2.5 text-[10px] text-[#8a8a93] leading-normal flex items-start gap-1.5">
+                  <span className="text-[#00f0ff] font-bold">💡 Tip:</span>
+                  <span>
+                    No more ZIP extraction hassles! You can select a folder on your system (e.g., your Desktop or a specific Project folder) and have all the newly converted images written directly there instantly.
+                  </span>
+                </div>
               </div>
 
               {/* Conversion Action Panel */}
@@ -1190,17 +1203,17 @@ export default function App() {
                     <button
                       onClick={convertAndDownloadAll}
                       disabled={files.length === 0 || converting}
-                      className="w-full flex items-center justify-center gap-2 bg-[#00f0ff] disabled:bg-[#1c2e33] text-black disabled:text-[#8a8a93] font-bold text-xs py-2 px-4 rounded-md transition-all hover:bg-[#33f3ff] shadow-md hover:shadow-[#00f0ff]/20 disabled:hover:shadow-none cursor-pointer"
+                      className="w-full flex items-center justify-center gap-2 bg-[#00f0ff] disabled:bg-[#1c2e33] text-black disabled:text-[#8a8a93] font-bold text-xs py-2 px-4 rounded-md transition-all hover:bg-[#33f3ff] shadow-md hover:shadow-[#00f0ff]/20 disabled:hover:shadow-none cursor-pointer uppercase tracking-wider"
                     >
                       {converting ? (
                         <>
                           <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          Converting...
+                          Downloading...
                         </>
                       ) : (
                         <>
                           <Download className="w-3.5 h-3.5" />
-                          Convert & Save All
+                          Download
                         </>
                       )}
                     </button>
@@ -1208,7 +1221,7 @@ export default function App() {
                 </div>
 
                 {/* In-browser Alpha Flattening Indicator */}
-                {["jpeg", "bmp", "pdf"].includes(outputFormat) && (
+                {["jpeg", "bmp"].includes(outputFormat) && (
                   <div className="mt-3 flex items-start gap-2 bg-[#fc9d03]/10 border border-[#fc9d03]/20 rounded p-2 text-[11px] text-[#fca311]">
                     <AlertTriangle className="w-4 h-4 shrink-0" />
                     <p>
@@ -1221,7 +1234,7 @@ export default function App() {
                 {converting && (
                   <div className="mt-4">
                     <div className="flex justify-between text-[10px] text-[#8a8a93] mb-1">
-                      <span>Converting in-browser...</span>
+                      <span>Processing & Downloading...</span>
                       <span>{progress}%</span>
                     </div>
                     <div className="w-full bg-[#202024] rounded-full h-1.5 overflow-hidden">
