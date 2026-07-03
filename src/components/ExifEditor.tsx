@@ -39,9 +39,16 @@ interface QueuedFile {
 interface ExifEditorProps {
   queuedFiles: QueuedFile[];
   onUpdateQueuedFile: (id: string, updatedExifDataUrl: string, metadata: ExifMetadata, customName?: string) => void;
+  isAuthenticated: boolean;
+  checkLimitAndIncrement: (count: number) => boolean;
 }
 
-export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEditorProps) {
+export default function ExifEditor({ 
+  queuedFiles, 
+  onUpdateQueuedFile,
+  isAuthenticated,
+  checkLimitAndIncrement
+}: ExifEditorProps) {
   const [selectedFileId, setSelectedFileId] = useState<string>("");
   const [currentImageSrc, setCurrentImageSrc] = useState<string>("");
   const [originalName, setOriginalName] = useState<string>("");
@@ -249,6 +256,12 @@ export default function ExifEditor({ queuedFiles, onUpdateQueuedFile }: ExifEdit
   // Download the currently edited image
   const handleDownload = () => {
     if (!currentImageSrc) return;
+    
+    // Check usage limits for guests
+    if (!checkLimitAndIncrement(1)) {
+      return;
+    }
+
     const baseName = originalName.substring(0, originalName.lastIndexOf(".")) || originalName;
     const downloadName = `${customFileName || baseName}.jpg`;
 

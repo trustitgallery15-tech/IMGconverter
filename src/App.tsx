@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { 
   Upload, 
   Image as ImageIcon, 
@@ -17,12 +17,17 @@ import {
   Compass,
   Map as MapIcon,
   Navigation,
-  FileEdit
+  FileEdit,
+  LogOut,
+  Lock,
+  Sparkles
 } from "lucide-react";
 import JSZip from "jszip";
 import MapPicker from "./components/MapPicker";
 import ExifEditor from "./components/ExifEditor";
 import { ExifMetadata, saveExifToDataUrl } from "./lib/exifUtils";
+import { auth, signOut, onAuthStateChanged, User } from "./lib/firebase";
+import AuthModal from "./components/AuthModal";
 
 // Updated python code with GPS Geo Tagging support
 const PYTHON_CODE = `import os
@@ -561,6 +566,34 @@ interface QueuedFile {
 }
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loadingAuth, setLoadingAuth] = useState<boolean>(true);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [usageCount, setUsageCount] = useState<number>(() => {
+    const stored = localStorage.getItem("regular_user_usage_count");
+    return stored ? parseInt(stored, 10) : 0;
+  });
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoadingAuth(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const checkLimitAndIncrement = (count: number): boolean => {
+    if (user) return true; // unlimited for logged-in users!
+    if (usageCount + count > 10) {
+      setShowAuthModal(true);
+      return false;
+    }
+    const newCount = usageCount + count;
+    setUsageCount(newCount);
+    localStorage.setItem("regular_user_usage_count", String(newCount));
+    return true;
+  };
+
   const [files, setFiles] = useState<QueuedFile[]>([]);
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [outputFormat, setOutputFormat] = useState<string>("jpeg");
@@ -703,6 +736,12 @@ export default function App() {
 
   const convertAndDownloadAll = async () => {
     if (files.length === 0) return;
+
+    // Check usage limits for guests
+    if (!checkLimitAndIncrement(files.length)) {
+      return;
+    }
+
     setConverting(true);
     setProgress(5);
 
@@ -844,17 +883,39 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#121214] text-[#e1e1e6] flex flex-col font-sans selection:bg-[#00f0ff]/30 selection:text-[#00f0ff]">
       {/* Header */}
-      <header className="border-b border-[#202024] bg-[#16161a] py-4 px-6 md:px-12 flex items-center justify-between shadow-md">
-        <div className="flex items-center gap-3">
-          <div className="bg-[#00f0ff]/10 p-2 rounded-lg border border-[#00f0ff]/20">
-            <Cpu className="w-6 h-6 text-[#00f0ff]" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-white tracking-wide">BULK IMAGE CONVERTER & GEO TAGGER</h1>
-            <p className="text-xs text-[#8a8a93]">PyQt6 Desktop Script & Interactive Map Web Companion</p>
+      <header className="border-b border-[#202024] bg-[#16161a] py-4 px-6 md:px-12 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-md">
+        <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-start">
+          {/* Top Left Logout / Auth Action Button */}
+          {user ? (
+            <button
+              onClick={() => signOut(auth)}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg transition-all cursor-pointer shrink-0"
+              title={`Sign Out (${user.email})`}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Log Out</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowAuthModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#00f0ff] hover:text-white bg-[#00f0ff]/10 hover:bg-[#00f0ff]/20 border border-[#00f0ff]/30 rounded-lg transition-all cursor-pointer shrink-0"
+            >
+              <Lock className="w-3.5 h-3.5 text-[#00f0ff]" />
+              <span>Log In</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-3">
+            <div className="bg-[#00f0ff]/10 p-2 rounded-lg border border-[#00f0ff]/20">
+              <Cpu className="w-6 h-6 text-[#00f0ff]" />
+            </div>
+            <div>
+              <h1 className="text-sm md:text-base font-bold text-white tracking-wide">BULK IMAGE CONVERTER & GEO TAGGER</h1>
+              <p className="text-[10px] text-[#8a8a93]">PyQt6 Desktop Script & Interactive Map Web Companion</p>
+            </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
           <button 
             onClick={handleDownloadPythonScript}
             className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded bg-[#00f0ff]/10 border border-[#00f0ff]/30 hover:bg-[#00f0ff]/20 text-[#00f0ff] transition-all cursor-pointer"
@@ -878,6 +939,53 @@ export default function App() {
             <div className="text-xs text-[#8a8a93] flex items-center gap-1.5">
               <Info className="w-3.5 h-3.5 text-[#00f0ff]" />
               Runs client-side in browser
+            </div>
+          </div>
+
+          {/* Usage Limit Bar for Regular/Guest Users */}
+          <div className="mb-5 p-3.5 bg-[#1e1e24] border border-[#202024] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-[#8a8a93] uppercase tracking-wider">Usage Status:</span>
+              {user ? (
+                <span className="text-xs font-extrabold text-[#00f0ff] tracking-wide flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#00f0ff] animate-pulse"></span>
+                  ⚡ UNLIMITED PRO MEMBERSHIP
+                </span>
+              ) : (
+                <span className="text-xs font-extrabold text-amber-500 tracking-wide flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                  ⚠️ REGULAR USER (LIMIT: 10 IMAGES)
+                </span>
+              )}
+            </div>
+            
+            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto border-t sm:border-t-0 border-[#2b2b35] pt-2 sm:pt-0">
+              {!user && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[#8a8a93]">
+                    Converted: <strong className="text-white font-mono">{usageCount}/10</strong>
+                  </span>
+                  <div className="w-24 bg-[#2b2b35] h-1.5 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full transition-all ${usageCount >= 10 ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" : "bg-amber-500"}`}
+                      style={{ width: `${Math.min((usageCount / 10) * 100, 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              )}
+              {!user ? (
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="text-xs font-bold text-[#00f0ff] hover:text-[#33f3ff] hover:underline flex items-center gap-1 shrink-0 cursor-pointer uppercase tracking-wider"
+                >
+                  <Sparkles className="w-3.5 h-3.5 animate-pulse" />
+                  Sign In for Unlimited
+                </button>
+              ) : (
+                <div className="text-[10px] text-emerald-400 font-bold flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                  Active
+                </div>
+              )}
             </div>
           </div>
 
@@ -1130,6 +1238,8 @@ export default function App() {
             <ExifEditor 
               queuedFiles={files} 
               onUpdateQueuedFile={handleUpdateQueuedFile} 
+              isAuthenticated={!!user}
+              checkLimitAndIncrement={checkLimitAndIncrement}
             />
           )}
         </section>
@@ -1234,6 +1344,9 @@ export default function App() {
       <footer className="border-t border-[#202024] bg-[#121214] py-4 text-center text-xs text-[#8a8a93] mt-auto">
         Designed for extreme image safety, layout rhythm, and responsive desktop performance.
       </footer>
+
+      {/* Auth Modal overlay */}
+      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
     </div>
   );
 }
