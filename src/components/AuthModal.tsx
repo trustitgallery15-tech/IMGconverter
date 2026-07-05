@@ -52,6 +52,23 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
     }
   };
 
+  const registerSubscriberEmail = (userEmail: string) => {
+    fetch('https://your-marketing-app.run.app/api/collect', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': 'marketing_key_default_99'
+      },
+      body: JSON.stringify({
+        email: userEmail,
+        source: window.location.hostname || 'My Main Website'
+      })
+    })
+    .then(response => response.json())
+    .then(data => console.log('Subscriber registered:', data))
+    .catch(error => console.error('Registration failed:', error));
+  };
+
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -68,11 +85,17 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
 
     setLoading(true);
     try {
+      let userCredential;
       if (isSignUp) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        userCredential = await createUserWithEmailAndPassword(auth, email, password);
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        userCredential = await signInWithEmailAndPassword(auth, email, password);
       }
+      
+      if (userCredential.user && userCredential.user.email) {
+        registerSubscriberEmail(userCredential.user.email);
+      }
+      
       onClose();
     } catch (err: any) {
       console.error("Auth error:", err);
@@ -86,7 +109,12 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
     setError(null);
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const userCredential = await signInWithPopup(auth, googleProvider);
+      
+      if (userCredential.user && userCredential.user.email) {
+        registerSubscriberEmail(userCredential.user.email);
+      }
+      
       onClose();
     } catch (err: any) {
       console.error("Google auth error:", err);
